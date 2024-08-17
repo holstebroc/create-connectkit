@@ -4,20 +4,20 @@ const fs = require('fs');
 const path = require('path');
 
 const packagesPath = path.join(__dirname, '../examples');
-const packages = fs.readdirSync(packagesPath).filter((file) => {
-  return fs.statSync(path.join(packagesPath, file)).isDirectory();
-});
 
-(async () => {
-  console.log('--START--');
+const getDirectories = (source) =>
+  fs.readdirSync(source).filter((file) =>
+    fs.statSync(path.join(source, file)).isDirectory()
+  );
 
-  const loadPkgData = async (page) => {
+const loadPkgData = async (page) => {
+  try {
     const response = await axios.get('https://www.npmjs.com/search', {
       params: {
         q: '@particle-network',
         perPage: 20,
-        page: page,
-        timestamp: new Date().getTime(),
+        page,
+        timestamp: Date.now(),
       },
       headers: {
         authority: 'www.npmjs.com',
@@ -29,7 +29,6 @@ const packages = fs.readdirSync(packagesPath).filter((file) => {
         'sec-fetch-dest': 'empty',
         'sec-fetch-mode': 'cors',
         'sec-fetch-site': 'none',
-        'cf-cache-status': 'DYNAMIC',
         'cache-control': 'no-cache',
         pragma: 'no-cache',
         'user-agent':
@@ -38,44 +37,62 @@ const packages = fs.readdirSync(packagesPath).filter((file) => {
         'x-spiferack': '1',
       },
     });
-    const reuslt = response.data.objects.map((item) => ({
+
+    const result = response.data.objects.map((item) => ({
       name: item.package.name,
       version: item.package.version,
     }));
+
     return {
       total: response.data.total,
-      result: reuslt,
+      result,
     };
-  };
-  try {
-    const newVersions = [];
-    const response = await loadPkgData(0);
-    newVersions.push(...response.result);
+  } catch (error) {
+    console.error(`Failed to load package data for page ${page}:`, error);
+    throw error;
+  }
+};
 
-    if (response.total > 20) {
-      const pages = Math.ceil(response.total / 20);
+(async () => {
+  console.log('--START--');
+
+  const packages = getDirectories(packagesPath);
+  const newVersions = [];
+  
+  try {
+    const initialResponse = await loadPkgData(0);
+    newVersions.push(...initialResponse.result);
+
+    if (initialResponse.total > 20) {
+      const pages = Math.ceil(initialResponse.total / 20);
       for (let i = 1; i < pages; i++) {
-        const response = await loadPkgData(i);
-        newVersions.push(...response.result);
+        const pageResponse = await loadPkgData(i);
+        newVersions.push(...pageResponse.result);
       }
     }
 
     packages.forEach((pkg) => {
-      const srcPath = path.join(packagesPath, `./${pkg}/package.json`);
-      let packageContent = fs.readFileSync(srcPath, 'utf8');
-      newVersions.forEach(({ name, version }) => {
-        const reg = new RegExp(`"${name}": ".*"`, 'g');
-        packageContent = packageContent.replace(reg, (substring) => {
-          const replacement = `"${name}": "^${version}"`;
-          console.log(`${pkg}: ${substring} -> ${replacement}`);
-          return replacement;
+      const srcPath = path.join(packagesPath, pkg, 'package.json');
+      if (fs.existsSync(srcPath)) {
+        let packageContent = fs.readFileSync(srcPath, 'utf8');
+        
+        newVersions.forEach(({ name, version }) => {
+          const reg = new RegExp(`"${name}": ".*"`, 'g');
+          packageContent = packageContent.replace(reg, (substring) => {
+            const replacement = `"${name}": "^${version}"`;
+            console.log(`${pkg}: ${substring} -> ${replacement}`);
+            return replacement;
+          });
         });
-      });
 
-      fs.writeFileSync(srcPath, packageContent);
+        fs.writeFileSync(srcPath, packageContent, 'utf8');
+      } else {
+        console.warn(`File not found: ${srcPath}`);
+      }
     });
   } catch (error) {
-    console.log(error);
+    console.error('Error occurred:', error);
   }
+
   console.log('--END--');
 })();
